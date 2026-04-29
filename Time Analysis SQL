@@ -1,0 +1,68 @@
+/**************************************************
+Title: Urgent Call to Crisis Service Time Analysis
+Author(s): Ben M.
+Date Created: 3/25/2026
+Updates:
+Notes: 3/26/2026 For future reference: If you ever want to convert this 
+    back to a pure CTE-based query (without the temp table), 
+    you could do it by using a CTE with ROW_NUMBER() partitioned 
+    the same way, then filtering WHERE rn = 1 in the final SELECT
+    
+    The purpose of the stat columns:
+    - avg_minutes/avg_hours --> Average time from urgent call to crisis service. 
+    - min_minutes/max_minutes --> Range of reponse times
+    - total_urgent_calls_with_crisis_service --> How many calls led to a crisis service. 
+    - total_urgent_calls_marked --> Total number of calls marked urgent. 
+    - percent_resulting_in_crisis_service --> The conversion rate from urgent calls to crisis service. 
+**************************************************/
+
+DROP TABLE IF EXISTS #urgent_to_crisis
+SELECT CV.clientvisit_id,
+       CV.client_id, UPPER(CV.clientfirstname) + ' ' + UPPER(CV.clientlastname) AS Client_Name,
+       CV.rev_timein AS urgent_call_time,
+       Crisis.clientvisit_id AS crisis_visit_id, Crisis.visittype,
+       Crisis.rev_timein AS crisis_service_time,
+       DATEDIFF(mi, CV.rev_timein, Crisis.rev_timein) AS minutes_to_service,
+       DATEDIFF(hh, CV.rev_timein, Crisis.rev_timein) AS hours_to_service,
+       ROW_NUMBER() OVER(PARTITION BY CV.client_id, CV.clientvisit_id ORDER BY Crisis.clientvisit_id) AS rn
+INTO #urgent_to_crisis
+FROM ClientVisit CV
+JOIN SavedVisitAnswer SVA ON SVA.clientvisit_id = CV.clientvisit_id
+JOIN Question q ON q.question_id = SVA.question_id
+JOIN Answer a ON a.answer_id = SVA.answer_id
+--Purpose of LEFT JOIN below: Identifies and links each urgent call to the client's...
+--...first billable crisis service within a 7-day window.
+LEFT JOIN (
+    SELECT CV.clientvisit_id, 
+           CV.client_id, 
+           CV.visittype, 
+           CV.rev_timein
+    FROM ClientVisit CV
+    WHERE (CV.program_id IN (22, 33))  --Crisis Services, Mobile Crisis
+    --AND (CV.non_billable = 0)  --Uncomment this section if you want to include only billable services!
+    AND (CV.visittype_id <> 39)  --This excludes Cancel Appointment service types. 
+    ) Crisis ON (Crisis.client_id = CV.client_id) 
+        AND (Crisis.rev_timein > CV.rev_timein)  -- Must occur AFTER the urgent call
+        AND (Crisis.rev_timein <= DATEADD(dd, 7, CV.rev_timein))  -- Within 7 days
+        --AND (Crisis.rn = 1)  -- Only the FIRST crisis service per client (after the urgent call)
+WHERE (CV.visittype_id = 64)  --Contact Note
+AND (q.ancestor_id = 486357)  --Question text "Acuity"
+AND (a.answer = 'urgent')  --We only care about the urgent calls
+ORDER BY CV.clientvisit_id
+
+DELETE FROM #urgent_to_crisis WHERE rn > 1
+
+--Stats:
+SELECT ROUND(AVG(CAST(minutes_to_service AS FLOAT)), 2) AS avg_minutes,
+       ROUND(AVG(CAST(minutes_to_service AS FLOAT)) / 60, 2) AS avg_hours,
+       MIN(minutes_to_service) AS min_minutes,
+       MAX(minutes_to_service) AS max_minutes,
+       COUNT(CASE WHEN crisis_visit_id IS NOT NULL THEN 1 END) AS total_urgent_calls_with_crisis_service,
+       COUNT(*) AS total_urgent_calls_marked,
+       ROUND(CAST(COUNT(CASE WHEN crisis_visit_id IS NOT NULL THEN 1 END) AS FLOAT) / COUNT(*) * 100, 2) 
+        AS percent_resulting_in_crisis_service
+FROM #urgent_to_crisis;
+
+--Raw Data:
+SELECT * FROM #urgent_to_crisis
+ORDER BY clientvisit_id
