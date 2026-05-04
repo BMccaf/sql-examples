@@ -1,0 +1,125 @@
+/*********************************************************************
+Title: Client Relapses
+Author(s): Ben M.
+Date Created: 8/15/2024 
+Grant Question Text: Effectiveness (All Programs) - Number of consumers 
+	reengaging in services within past six months due to relapse? 
+Updates: 1/6/2025 - Made a couple small changes to make the code more accurate. 
+	10/29/2024 - Three steps were added as the end to (1) to prevent clients 
+	being counted multiple times throughout the year and (2) to make it easier 
+	to only show the relapsed cleints on the final SSRS report. 
+	9/11/2024 - Added the Discharge_YN and SameProgram_YN columns to
+	help with some logic issues. 
+	9/10/2024 - Removed the DELETE statements and changed the intake 
+	and discharge temp tables to only pull data between the @SixMonthsPrior 
+	and @EndDate parameters. 
+	9/5/2024 - Added a column that displays what quarter the rev_timein
+	falles within. 
+	8/28/2024 - Moved the Relapses to the Curated database and 
+	adjusted the associated job "Update Relapses Table".
+	8/22/2024 - Created a permanent table in TestDomain called Relapses,
+	that captures all the relapses for the last two quarters (Jan - Jun 2024). 
+	The plan is to create a job that runs every six months that appends/inserts the 
+	new data into the permanent Relapses table.  The permanent table is used 
+	by SSRS for the Relapse Report. 
+*********************************************************************/
+
+--Variables
+DECLARE @EndDate date = (SELECT CONVERT(date, DATEADD(QUARTER, DATEDIFF(QUARTER, 0, GETDATE()), -1)))  --Last day of previous quarter
+DECLARE @StartDate date = (SELECT CONVERT(date, DATEADD(MONTH, DATEDIFF(MONTH, 0, @EndDate) -6, DAY(@EndDate) -1)))  --6 months before @EndDate
+DECLARE @SixMonthsPrior date = (SELECT CONVERT(date, DATEADD(MONTH, DATEDIFF(MONTH, 0, @StartDate) -6, DAY(@StartDate) +1))) 
+	--6 months prior to @StartDate or 1 year back from @EndDate
+DECLARE @TwoQtrsBack varchar(7) = '2024-Q2'  --UPDATE AS NEEDED! Should be two quarters back (i.e. 6 months ago)
+DECLARE @OneQtrBack varchar(7) = '2024-Q3'  --UPDATE AS NEEDED! Should be one quarter back (i.e. 3 months ago)
+/*********************************************************************/
+
+--Intakes temp table. 
+DROP TABLE IF EXISTS #Intakes
+SELECT CV.clientvisit_id, UPPER(first_name) + ' ' + UPPER(last_name) AS Client_Name,
+	client_id, visittype_id, visittype, P.program_code + ' ' + UPPER(program_desc) AS Program,
+	CONVERT(date, rev_timein) AS rev_timein
+INTO #Intakes
+FROM Curated.dbo.ClientVisit CV
+JOIN Credible.dbo.Programs P ON P.program_id = CV.program_id
+WHERE ((CV.visittype_id IN (326, 328, 327)))
+AND
+((CONVERT(date, rev_timein) BETWEEN @SixMonthsPrior AND @EndDate))
+
+
+/*********************************************************************/
+
+--Discharges temp table. 
+DROP TABLE IF EXISTS #Discharges
+SELECT CV.clientvisit_id, UPPER(first_name) + ' ' + UPPER(last_name) AS Client_Name,
+	client_id, CV.visittype_id, visittype, P.program_code + ' ' + UPPER(program_desc) AS Program,
+	CONVERT(date, rev_timein) AS rev_timein
+INTO #Discharges
+FROM Curated.dbo.ClientVisit CV
+JOIN Credible.dbo.Programs P ON P.program_id = CV.program_id
+JOIN Credible.dbo.SavedVisitAnswer SVA ON SVA.clientvisit_id = CV.clientvisit_id
+JOIN Credible.dbo.Question Q ON Q.question_id = SVA.question_id
+JOIN Credible.dbo.Answer A ON A.answer_id = SVA.answer_id
+WHERE ((Q.question_text LIKE '%Is this for a transition or a discharge%'))
+AND
+((A.answer LIKE '%Discharge%'))
+AND
+((CV.visittype_id = 348))  
+AND
+((CONVERT(date, rev_timein) BETWEEN @SixMonthsPrior AND @EndDate))
+
+
+/**********************************************************************/
+
+--The two above temp tables unioned together. 
+DROP TABLE IF EXISTS #Union
+SELECT *, ROW_NUMBER() OVER(PARTITION BY client_id ORDER BY clientvisit_id, rev_timein) AS RowNumber,
+	DATEDIFF(day, LAG(rev_timein, 1) OVER(PARTITION BY client_id ORDER BY rev_timein ASC), rev_timein) 
+		AS Day_Difference, 
+	IIF(LAG(visittype_id, 1) OVER(PARTITION BY client_id ORDER BY rev_timein ASC) = 348, 1, 0) AS Discharge_YN,
+	IIF(LAG(Program, 1) OVER(PARTITION BY client_id ORDER BY rev_timein ASC) = Program, 1, 0) AS SameProgram_YN
+INTO #Union
+FROM (
+SELECT * FROM #Intakes
+UNION
+SELECT * FROM #Discharges
+) subquery
+
+--SELECT * FROM #Union
+/***********************************************************************/
+
+DROP TABLE IF EXISTS #Final
+SELECT *, IIF(((rev_timein BETWEEN @StartDate AND @EndDate) AND (RowNumber > 1) AND (visittype LIKE '%Intake%') 
+		AND (Day_Difference >= 1)) AND ((Discharge_YN = 1) OR (SameProgram_YN = 1)), 1, 0) AS Relapse_YN,
+	CAST(year((SELECT DATEADD(QUARTER, DATEDIFF(QUARTER, 0, GETDATE()), -1))) AS char(4)) --Last day of previous quarter.
+	+ '-Q' + 
+    CAST(CEILING(CAST(month(DATEADD(QUARTER, DATEDIFF(QUARTER, 0, GETDATE()), -1)) AS decimal(4,2)) / 3) AS char(1)) AS SelectQuarter,
+	'https://www.cbh3.crediblebh.com/visit/clientvisit_view.asp?clientvisit_id=' + trim(str(clientvisit_id)) + '&provportal=0' ClientVisitLink,
+	'https://www.cbh3.crediblebh.com/client/my_cw_clients.asp?client_id=' + trim(str(client_id)) as ClientLink,
+	NULL AS Included_In_Relapse_Report
+INTO #Final
+FROM #Union
+
+--The following three steps were added: (1) to prevent clients being counted multiple times throughout the year
+--(2) to make it easier to only show the relapsed cleints on the final SSRS report. 
+DELETE FROM #Final WHERE client_id IN (SELECT DISTINCT client_id 
+	FROM Curated.dbo.Relapses WHERE (SelectQuarter = @TwoQtrsBack) OR (SelectQuarter = @OneQtrBack))
+
+UPDATE #Final
+SET Included_In_Relapse_Report = 1
+WHERE client_id IN (SELECT DISTINCT client_id FROM #Final WHERE Relapse_YN = 1)
+
+DELETE FROM #Final WHERE Included_In_Relapse_Report IS NULL
+
+--Comment out these two lines when running the very bottom code to update the 
+--relapses table. 
+SELECT * FROM #Final  
+SELECT COUNT(DISTINCT client_id) FROM #Final WHERE Relapse_YN = 1
+
+/*************************************************************
+The below step is used for updating the Curated.dbo.Relapses table.
+Review the code carefully before uncommenting and running the code below. 
+BE SURE TO UPDATE THE Intakes TABLE AS WELL!
+*************************************************************/
+
+--INSERT INTO Curated.dbo.Relapses
+--SELECT * FROM #Final
