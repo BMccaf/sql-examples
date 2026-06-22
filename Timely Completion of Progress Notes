@@ -5,6 +5,11 @@ Date Created: 12/4/2024
 Updates: 12/19/2024 - Commented out the section of code that excludes
 	weekends.  This is because a lot of the programs doing PN perform
 	them 24/7 (i.e. crisis services).
+Notes: This is an example of an intermediate SQL query created for my employer. 
+	We use the Credible EHR system and continously need to track performance statistics 
+	for our employees. The attacted SQL code queries several different databases and tables 
+	to build a final table, that will then be used in SSRS to create a report for our end 
+	user supervisors. Any employee or client names mentioned in the original code have been redacted.
 *****************************************************************/
 
 DROP TABLE IF EXISTS #T1_ProgressNotes
