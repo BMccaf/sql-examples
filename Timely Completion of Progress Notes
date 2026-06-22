@@ -1,0 +1,47 @@
+/*****************************************************************
+Title: Timely Completion of Progress Notes
+Author(s): Ben M
+Date Created: 12/4/2024
+Updates: 12/19/2024 - Commented out the section of code that excludes
+	weekends.  This is because a lot of the programs doing PN perform
+	them 24/7 (i.e. crisis services).
+*****************************************************************/
+
+DROP TABLE IF EXISTS #T1_ProgressNotes
+SELECT clientvisit_id, P.program_code + ' ' + P.program_desc AS Program, rev_timein,
+	client_id, CV.clientfirstname + ' ' + CV.clientlastname AS Client_Name, 
+	emp_id, UPPER(CV.emp_name) AS emp_name, visittype_id, visittype, rev_timeout,
+	signature_datetime, 
+	DATEDIFF(DD, CV.rev_timeout, CV.signature_datetime)
+	--- (DATEDIFF(WK, CV.rev_timeout, CV.signature_datetime) * 2)  --uncomment if you want to exclude weekends.
+	- CASE WHEN DATEPART(DW, CV.rev_timeout) = 1 THEN 1 ELSE 0 END
+	+ CASE WHEN DATEPART(DW, CV.signature_datetime) = 1 THEN 1 ELSE 0 END 
+	- (SELECT COUNT(holiday_date) FROM Curated.dbo.ValeoHolidays AS h WHERE h.holiday_date BETWEEN CV.rev_timeout AND CV.signature_datetime)
+	AS Date_Diff_Days
+	--The above DATEDIFF function excludes holidays and weekends. 
+INTO #T1_ProgressNotes
+FROM Credible.dbo.ClientVisit CV
+JOIN Credible.dbo.FormVersion FV ON FV.form_ver_id = CV.form_ver_id
+JOIN Credible.dbo.Forms F ON F.form_id = FV.form_id
+JOIN Credible.dbo.Programs P ON P.program_id = CV.program_id
+WHERE ((F.form_id IN (102, 103, 124, 356, 359, 368)))
+--*BP Group Progress Note, Valeo Progress Note, *BP IDD Progress Note,
+--LMHP Progress Note, VALEO PROGRESS NOTEv2, Valeo Group progress Note v2
+
+--Sets all the negative values to 0
+UPDATE #T1_ProgressNotes
+SET Date_Diff_Days = 0
+WHERE Date_Diff_Days < 0
+
+--SELECT * FROM #T1_ProgressNotes
+/*********************************************************************/
+
+DROP TABLE IF EXISTS #T2_Final
+SELECT PN.*,
+	IIF(Date_Diff_Days = 0, 1, 0) AS Twenty_Four_Hours_Or_Less,
+	IIF((Date_Diff_Days = 1) OR (Date_Diff_Days = 2), 1, 0) AS Between_24_and_48_Hours,
+	IIF(Date_Diff_Days > 2, 1, 0) AS Greater_Than_48_Hours
+INTO #T2_Final 
+FROM #T1_ProgressNotes PN
+
+SELECT * FROM #T2_Final
