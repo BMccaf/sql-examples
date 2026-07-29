@@ -1,0 +1,67 @@
+/*****************************************************************************
+Title: All Client Demograhics
+Author(s): BMccaf
+Date Created: 4-4-2024
+Updates:	5/23/2024 - Modified the code to look for only billable services, 
+  plus care coordination and HC Health Assessment. 
+*****************************************************************************/
+DROP TABLE IF EXISTS #SCV_ClientDemographics
+SELECT SCV.ClientId, P.program_code + ' ' + p.program_desc AS Program, CONVERT(date, SCV.RevTimeIn) AS rev_timein, 
+	(CASE 
+		WHEN ((C.race_omb = '1475') OR (C.race_omb = '253')) THEN 'American Indian/Alaska Native'
+		WHEN ((C.race_omb = '254')  OR (C.race_omb = '1476')) THEN 'Asian'
+		WHEN ((C.race_omb = '255') OR (C.race_omb = '1477')) THEN 'Black/African American'
+		WHEN ((C.race_omb = '256') OR (C.race_omb = '1478')) THEN 'Hawaiian/Pacific Islander'
+		WHEN ((C.race_omb = '1480') OR (C.race_omb = '257')) THEN 'White'
+		WHEN C.race_omb = '1890' THEN 'Two or more races'
+		WHEN ((C.race_omb = '586') OR (C.race_omb = '1479')) THEN 'Other Race'
+		ELSE 'Race Not Identified'
+	END) AS Race,
+	(CASE
+		WHEN ((C.ethnicity_omb = '1473') OR (C.ethnicity_omb = '258')) THEN 'Hispanic/Latino'
+		WHEN ((C.ethnicity_omb = '259') OR (C.ethnicity_omb = '1474')) THEN 'Not Hispanic/Latino'
+		ELSE 'Ethnicity Unknown'
+	END) AS Ethnicity,
+	(CASE	
+		WHEN C.dd30 = '1469' THEN 'Male'
+		WHEN C.dd30 = '1470' THEN 'Female'
+		WHEN C.dd30 = '1471' THEN 'Transgender Male to Female'
+		WHEN C.dd30 = '1472' THEN 'Transgender Female to Male'
+		ELSE 'Gender Not Identified'
+	END) AS Gender,
+	(CASE	
+		WHEN C.dd4 = '1897' THEN 'Asexual'
+		WHEN C.dd4 = '1893' THEN 'Bisexual'
+		WHEN C.dd4 = '1892' THEN 'Homosexual (gay or lesbian)'
+		WHEN C.dd4 = '1895' THEN 'Pansexual'
+		WHEN C.dd4 = '1894' THEN 'Queer'
+		WHEN C.dd4 = '1896' THEN 'Questioning'
+		WHEN C.dd4 = '1891' THEN 'Straigth or Heterosexual'
+		ELSE 'Sexual Orientation Not Identified'
+	END) AS Sexual_Orientation,
+	(CASE	
+		WHEN (Year(SCV.RevTimeIn) - Year(C.dob) BETWEEN 0 AND 5) THEN '0-5'
+		WHEN (Year(SCV.RevTimeIn) - Year(C.dob) BETWEEN 6 AND 12) THEN '6-12'
+		WHEN (Year(SCV.RevTimeIn) - Year(C.dob) BETWEEN 13 AND 18) THEN '13-18'
+		WHEN (Year(SCV.RevTimeIn) - Year(C.dob) BETWEEN 19 AND 25) THEN '19-25'
+		WHEN (Year(SCV.RevTimeIn) - Year(C.dob) BETWEEN 26 AND 34) THEN '26-34'
+		WHEN (Year(SCV.RevTimeIn) - Year(C.dob) BETWEEN 35 AND 44) THEN '35-44'
+		WHEN (Year(SCV.RevTimeIn) - Year(C.dob) BETWEEN 45 AND 54) THEN '45-54'
+		WHEN (Year(SCV.RevTimeIn) - Year(C.dob) BETWEEN 55 AND 64) THEN '55-64'
+		WHEN (Year(SCV.RevTimeIn) - Year(C.dob) >= 65) THEN '65+'
+		ELSE 'Age Unknown'
+	END) AS Age,
+	(CASE
+		WHEN ((C.dd11 = '1457') OR (C.dd11 = '106')) THEN 'Not Veteran'
+		WHEN ((C.dd11 = '1456') OR (C.dd11 = '105')) THEN 'Veteran'
+		ELSE 'Veteran Status Unknown'
+	END) AS Veteran_Status 
+INTO #SCV_ClientDemographics
+FROM Credible.dbo.SmartClientVisit SCV
+JOIN Credible.dbo.Clients C ON C.client_id = SCV.ClientId
+JOIN Credible.dbo.Programs P ON P.program_id = SCV.ProgramId
+WHERE ((SCV.NonBillable = 0))
+OR
+((SCV.VisitType LIKE '%Coord%') OR (SCV.VisitType LIKE '%HC Health%'))
+
+SELECT * FROM #SCV_ClientDemographics
